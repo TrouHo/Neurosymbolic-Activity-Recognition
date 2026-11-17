@@ -88,6 +88,13 @@ BLOCKS = {
     "leg": ("ts_SB - Jambe droite - ACC", ["x_sb.3", "y_sb.3", "z_sb.3"], "leg"),
 }
 BLOCK_ORDER = ["phone_acc", "phone_gyr", "hand", "belt", "leg"]
+
+# --- model outputs (approved 2026-11-17, reports/design/2026-11-17_model_architecture.md §3)
+# head -> number of output units; W and T are binary (one logit, sigmoid)
+HEADS = {"l2": 20, "l1": 7, "s": 6, "w": 1, "t": 1}
+BINARY_HEADS = {"w", "t"}
+# evaluation configurations: which devices are switched on at test time (§1.4)
+EVAL_CONFIGS = {"ALL": ["phone", "hand", "belt", "leg"], "PHONE": ["phone"], "HB": ["hand", "belt"]}
 # One time offset per device (a device has one clock). Reference Qualisys marker nearest to it
 # (same mapping as the 2026-11-09 audit).
 DEVICES = {"phone": ("phone_acc", "D_hanche"), "hand": ("hand", "D_main"),
