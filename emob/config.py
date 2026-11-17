@@ -5,10 +5,13 @@ Every value here is documented in knowledge_base/02_design_rationale.md.
 import os
 from pathlib import Path
 
-# Paths can be overridden on the server: EMOB_RAW_2022, EMOB_PROCESSED
-PROJECT = Path(r"D:\Projects\EmoB")
+# Paths. Defaults assume the layout <project>/code/emob/config.py and <project>/data/...;
+# every path can be overridden: EMOB_PROJECT, EMOB_RAW_2022, EMOB_PROCESSED.
+CODE = Path(__file__).resolve().parents[1]                      # .../code
+PROJECT = Path(os.environ.get("EMOB_PROJECT", CODE.parent))
 RAW_2022 = Path(os.environ.get("EMOB_RAW_2022", PROJECT / "data" / "raw" / "capture_2022-01-26"))
 PROCESSED = Path(os.environ.get("EMOB_PROCESSED", PROJECT / "data" / "processed" / "v1"))
+PARAMS = CODE / "params"            # frozen parameters estimated from the data (committed to git)
 
 # --- sampling -------------------------------------------------------------
 FS = 50                 # Hz, grid of the 2022 CSVs (ts_SQ step = 20)
@@ -72,6 +75,23 @@ POSTURE_TRANSITIONS = [c for c in L2_CLASSES if c in {
     "Debout_Assis", "Assis_Debout", "Assis_Couche", "Couche_Assis", "Debout_Penche", "Penche_Debout",
     "Debout_Agenou", "Agenou_Debout", "Debout_Accroupi", "Accroupi_Debout"}]
 OTHER_TRANSITION = "Autre_Transition"
+
+# --- pipeline v2: sensor blocks (decision 2026-11-17, reports/design/2026-11-17_model_architecture.md §1)
+# block -> (timestamp column, xyz columns, device). The xyz columns follow the timestamp column
+# in the CSV (checked on the real header 2026-11-17). SB GYR and MAG are empty in every recording;
+# the phone LAC (gravity removed, computed by the phone from ACC+GYR) adds no information.
+BLOCKS = {
+    "phone_acc": ("ts_SF - poche droite - ACC", ["x_sf", "y_sf", "z_sf"], "phone"),
+    "phone_gyr": ("ts_SF - poche droite - GYR", ["x_sf.2", "y_sf.2", "z_sf.2"], "phone"),
+    "hand": ("ts_SB - Main droite - ACC", ["x_sb.6", "y_sb.6", "z_sb.6"], "hand"),
+    "belt": ("ts_SB - Ceinture - ACC", ["x_sb", "y_sb", "z_sb"], "belt"),
+    "leg": ("ts_SB - Jambe droite - ACC", ["x_sb.3", "y_sb.3", "z_sb.3"], "leg"),
+}
+BLOCK_ORDER = ["phone_acc", "phone_gyr", "hand", "belt", "leg"]
+# One time offset per device (a device has one clock). Reference Qualisys marker nearest to it
+# (same mapping as the 2026-11-09 audit).
+DEVICES = {"phone": ("phone_acc", "D_hanche"), "hand": ("hand", "D_main"),
+           "belt": ("belt", "Bassin"), "leg": ("leg", "D_genou")}
 
 IGNORE = -1  # label index for "no supervision at this step"
 

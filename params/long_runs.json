@@ -1,0 +1,188 @@
+{
+ "created": "2026-11-17T19:59:28",
+ "script": "estimate/long_runs.py",
+ "rule": "(meeting 2026-11-16: verify with Qualisys and/or against the other participants; what\ncannot be verified is dropped). The first part of a run, from the label start to the end of the\nmovement measured by Qualisys, is KEPT only if all three conditions hold:\n  1. Qualisys sees the movement: signed vertical velocity of the family's marker, in the direction\n     the label implies, exceeds 150 mm/s within 3 s of the label start, and the movement has a\n     clear end (< 50 mm/s for 0.2 s). Labels without a direction (`Autre_Transition`) cannot pass.\n  2. Its duration is not longer than the longest run of the same label in the 7 other participants\n     (runs > 12 s excluded).\n  3. The label that precedes the run in the same column (previous non-`inactif` run) is followed by\n     this label in at least half of the other participants (same protocol, same order).\n     Only the preceding side can be checked: in 5/6 runs the label that follows is the same label\n     again (2026-11-15 finding), which never occurs in the other participants.\nEverything else in the run is MASKED. Labels are not shifted here: users 1, 3, 4 have no label\nshift, and shifting the others does not change durations or order.",
+ "time_base": "row indices (50 Hz) in the label time of the CSV, before label alignment",
+ "runs": [
+  {
+   "user": "user1",
+   "family": "body",
+   "column": "etiq mvt_corps",
+   "label": "Accroupi_Debout",
+   "start_row": 4930,
+   "end_row": 18434,
+   "start_s": 98.6,
+   "end_s": 368.68,
+   "length_s": 270.08,
+   "c1_qualisys": true,
+   "c1_note": "onset 98.60 s, end 100.36 s",
+   "kept_length_s": 1.76,
+   "c2_duration": true,
+   "others_max_s": 2.38,
+   "c3_order": true,
+   "previous_label": "Debout_Accroupi",
+   "previous_followed_by_label_in": "7/7",
+   "decision": "keep first movement, mask the rest",
+   "kept_rows": [
+    4930,
+    5018
+   ],
+   "masked_rows": [
+    5018,
+    18434
+   ],
+   "masked_s": 268.32,
+   "activite_rows_masked": 13416,
+   "activite_s_masked": 268.32
+  },
+  {
+   "user": "user1",
+   "family": "body",
+   "column": "etiq mvt_corps",
+   "label": "Autre_Transition",
+   "start_row": 27100,
+   "end_row": 31344,
+   "start_s": 542.0,
+   "end_s": 626.88,
+   "length_s": 84.88,
+   "c1_qualisys": false,
+   "c1_note": "label has no direction: not checkable",
+   "kept_length_s": null,
+   "c2_duration": false,
+   "others_max_s": 3.38,
+   "c3_order": true,
+   "previous_label": "Debout_Penche",
+   "previous_followed_by_label_in": "6/7",
+   "decision": "mask the whole run",
+   "kept_rows": null,
+   "masked_rows": [
+    27100,
+    31344
+   ],
+   "masked_s": 84.88,
+   "activite_rows_masked": 4244,
+   "activite_s_masked": 84.88
+  },
+  {
+   "user": "user1",
+   "family": "leg",
+   "column": "etiq mvt_jambe",
+   "label": "Baisser_Jambe",
+   "start_row": 13675,
+   "end_row": 14730,
+   "start_s": 273.5,
+   "end_s": 294.6,
+   "length_s": 21.1,
+   "c1_qualisys": true,
+   "c1_note": "onset 274.00 s, end 274.84 s",
+   "kept_length_s": 1.34,
+   "c2_duration": true,
+   "others_max_s": 2.12,
+   "c3_order": true,
+   "previous_label": "Lever_Jambe",
+   "previous_followed_by_label_in": "7/7",
+   "decision": "keep first movement, mask the rest",
+   "kept_rows": [
+    13675,
+    13742
+   ],
+   "masked_rows": [
+    13742,
+    14730
+   ],
+   "masked_s": 19.76,
+   "activite_rows_masked": 0,
+   "activite_s_masked": 0.0
+  },
+  {
+   "user": "user3",
+   "family": "arm",
+   "column": "etiq mvt_bras",
+   "label": "Lever_Bras",
+   "start_row": 12454,
+   "end_row": 13368,
+   "start_s": 249.08,
+   "end_s": 267.36,
+   "length_s": 18.28,
+   "c1_qualisys": true,
+   "c1_note": "onset 249.08 s, end 249.58 s",
+   "kept_length_s": 0.5,
+   "c2_duration": true,
+   "others_max_s": 2.7,
+   "c3_order": true,
+   "previous_label": "Autre_Mouvement_Bras",
+   "previous_followed_by_label_in": "4/7",
+   "decision": "keep first movement, mask the rest",
+   "kept_rows": [
+    12454,
+    12479
+   ],
+   "masked_rows": [
+    12479,
+    13368
+   ],
+   "masked_s": 17.78,
+   "activite_rows_masked": 889,
+   "activite_s_masked": 17.78
+  },
+  {
+   "user": "user3",
+   "family": "leg",
+   "column": "etiq mvt_jambe",
+   "label": "Lever_Jambe",
+   "start_row": 31744,
+   "end_row": 32564,
+   "start_s": 634.88,
+   "end_s": 651.28,
+   "length_s": 16.4,
+   "c1_qualisys": true,
+   "c1_note": "onset 634.88 s, end 635.36 s",
+   "kept_length_s": 0.48,
+   "c2_duration": true,
+   "others_max_s": 4.5,
+   "c3_order": true,
+   "previous_label": "Baisser_Jambe",
+   "previous_followed_by_label_in": "6/7",
+   "decision": "keep first movement, mask the rest",
+   "kept_rows": [
+    31744,
+    31768
+   ],
+   "masked_rows": [
+    31768,
+    32564
+   ],
+   "masked_s": 15.92,
+   "activite_rows_masked": 796,
+   "activite_s_masked": 15.92
+  },
+  {
+   "user": "user4",
+   "family": "arm",
+   "column": "etiq mvt_bras",
+   "label": "Baisser_2_Bras",
+   "start_row": 15687,
+   "end_row": 31368,
+   "start_s": 313.74,
+   "end_s": 627.36,
+   "length_s": 313.62,
+   "c1_qualisys": true,
+   "c1_note": "onset 314.44 s, end 315.68 s",
+   "kept_length_s": 1.94,
+   "c2_duration": false,
+   "others_max_s": 1.28,
+   "c3_order": false,
+   "previous_label": "Autre_Mouvement_Bras",
+   "previous_followed_by_label_in": "2/7",
+   "decision": "mask the whole run",
+   "kept_rows": null,
+   "masked_rows": [
+    15687,
+    31368
+   ],
+   "masked_s": 313.62,
+   "activite_rows_masked": 15681,
+   "activite_s_masked": 313.62
+  }
+ ]
+}
