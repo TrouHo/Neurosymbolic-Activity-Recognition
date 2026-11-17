@@ -18,10 +18,10 @@ review_app/frontend/dist/
 *.xlsx
 *.c3d
 *.tsv
-data/
-processed/
-results/
-runs/
+/data/
+/processed/
+/results/
+/runs/
 
 # Local configuration of the review app (machine-specific paths)
 review_app/config.json
