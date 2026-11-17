@@ -13,8 +13,9 @@ import pytest
 
 from emob import config as C
 
-REPORT = C.PROCESSED / "phase0_report.json"
-pytestmark = pytest.mark.skipif(not REPORT.exists(), reason="run `python -m emob.data.build` first")
+V1 = C.PROJECT / "data" / "processed" / "v1"       # historical pilot build (emob/data/build_v1.py)
+REPORT = V1 / "phase0_report.json"
+pytestmark = pytest.mark.skipif(not REPORT.exists(), reason="run `python -m emob.data.build_v1` first")
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +66,7 @@ def test_centre_label_almost_always_equals_majority(report):
 
 def test_npz_files_are_consistent():
     for p in [f"user{i}" for i in range(1, 9)]:
-        d = np.load(C.PROCESSED / f"{p}.npz")
+        d = np.load(V1 / f"{p}.npz")
         T = len(d["l2"])
         assert d["acc50"].shape == (d["ts"].shape[0], 6)
         assert T == d["ts"].shape[0] // C.STEP

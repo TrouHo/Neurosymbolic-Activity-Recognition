@@ -1,0 +1,66 @@
+{
+ "created": "2026-11-17T20:25:16",
+ "script": "estimate/label_offsets.py",
+ "source": "reports/data/2026-11-13_label_timing.json",
+ "source_sha256": "432d58f0bd0173deb0f0e0affb7fab89f23ac43438b24e19032481422453f53a",
+ "rule": "estimator 'signed: 10 named...'; shift only if the whole 90 % interval is outside +-0.1 s; same shift for every label column of a participant",
+ "sign": "d < 0: labels late; label_aligned[t] = label_raw[t - d]",
+ "participants": {
+  "user1": {
+   "estimate_s": -0.08,
+   "lo": -0.1,
+   "hi": -0.02,
+   "applied": false,
+   "shift_s": 0.0
+  },
+  "user2": {
+   "estimate_s": -0.18,
+   "lo": -0.2,
+   "hi": -0.12,
+   "applied": true,
+   "shift_s": -0.18
+  },
+  "user3": {
+   "estimate_s": -0.02,
+   "lo": -0.06,
+   "hi": 0.0,
+   "applied": false,
+   "shift_s": 0.0
+  },
+  "user4": {
+   "estimate_s": -0.04,
+   "lo": -0.08,
+   "hi": -0.02,
+   "applied": false,
+   "shift_s": 0.0
+  },
+  "user5": {
+   "estimate_s": -0.74,
+   "lo": -0.8,
+   "hi": -0.7,
+   "applied": true,
+   "shift_s": -0.74
+  },
+  "user6": {
+   "estimate_s": 0.54,
+   "lo": 0.52,
+   "hi": 0.56,
+   "applied": true,
+   "shift_s": 0.54
+  },
+  "user7": {
+   "estimate_s": -0.06,
+   "lo": -0.08,
+   "hi": -0.04,
+   "applied": false,
+   "shift_s": 0.0
+  },
+  "user8": {
+   "estimate_s": -0.22,
+   "lo": -0.3,
+   "hi": -0.18,
+   "applied": true,
+   "shift_s": -0.22
+  }
+ }
+}

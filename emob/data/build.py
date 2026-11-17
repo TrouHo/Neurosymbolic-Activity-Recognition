@@ -1,126 +1,248 @@
-"""Phase 0: build one .npz per 2022 participant and a gate-G0 report.
+"""Pipeline v2 — build the training data from the raw 2022 CSV files.
 
-Usage (from D:\\Projects\\EmoB\\code):
-    .venv\\Scripts\\python.exe -m emob.data.build
+Plan: reports/design/2026-11-17_pipeline_v2_plan.md (approved 2026-11-17).
+Reads only data/raw (read-only) and the frozen parameters in params/*.json; contains no value
+estimated from the data.
+
+  S1 read + format checks           (io: ts_SQ grid, column layout, known label values)
+  S2 sensor time alignment          (sync.py       <- params/sensor_offsets.json)
+  S4 mask anomalous label runs      (anomalies.py  <- params/long_runs.json; in CSV label time)
+  S3 label time alignment           (alignment.py  <- params/label_offsets.json)
+  S5 targets L2, L1, S, W, T        (labels.py)
+  S6 0.1-s step grid                (label = centre sample of each 5-sample step)
+  S7 files: userX.npz, manifest.json, data_card.md
+
+S4 runs before S3 because the long-run boundaries are expressed in the label time of the CSV;
+masks are then shifted together with the labels.
+
+Usage (from code/):  .venv\\Scripts\\python.exe -m emob.data.build [--out DIR]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
+import subprocess
 from datetime import datetime
+from glob import glob
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from emob import __version__, config as C
-from emob.data.io import load_recording
-from emob.data.labels import (annotated_mask, centre_vs_majority, encode_l2, l1_from_l2,
-                              posture_states, step_centres)
-from emob.data.rules import (hierarchy_agreement, last_valid_state_check, lookback_check,
-                             walk_segments, walking_state_counts)
+from emob.data import alignment, anomalies, sync
+from emob.data.labels import (L2_INDEX, annotated_mask, encode_l2, l1_from_l2, mask_posture_after,
+                              posture_states, step_centres, transition_targets, walk_targets)
 from emob.data.splits import PARTICIPANTS
 
-DELTAS = [0.1, 0.2, 0.3, 0.5, 1.0]
+KNOWN_ACTIVITE = set(C.L2_CLASSES) | C.PROTOCOL_MARKERS | {""}
 
 
-def family_vocab(recs) -> list[str]:
-    vocab = set()
-    for r in recs:
-        for c in C.FAMILY_COLS:
-            vocab |= set(r.families[c])
-    return sorted(vocab)                               # "" is index 0
+# ---------------------------------------------------------------- helpers
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for ch in iter(lambda: f.read(1 << 20), b""):
+            h.update(ch)
+    return h.hexdigest()
 
 
-def process(rec, vocab_index):
-    ann = annotated_mask(rec.families)
-    post = posture_states(rec.families[C.BODY_COL], ann)
-    l2_samples = encode_l2(rec.activite)
-    centres = step_centres(rec.n)
+def content_sha256(arrays: dict) -> str:
+    """Hash of the array contents (independent of zip timestamps), for the reproducibility check."""
+    h = hashlib.sha256()
+    for k in sorted(arrays):
+        a = np.ascontiguousarray(arrays[k])
+        h.update(k.encode()); h.update(str(a.dtype).encode()); h.update(str(a.shape).encode()); h.update(a.tobytes())
+    return h.hexdigest()
 
-    l2 = l2_samples[centres]
+
+def git_state() -> dict:
+    cands = ["git"] + sorted(glob(str(Path.home() / "AppData/Local/GitHubDesktop/app-*/resources/app/git/cmd/git.exe")))[::-1]
+    for g in cands:
+        try:
+            rev = subprocess.run([g, "rev-parse", "HEAD"], cwd=C.CODE, capture_output=True, text=True, check=True).stdout.strip()
+            dirty = subprocess.run([g, "status", "--porcelain"], cwd=C.CODE, capture_output=True, text=True, check=True).stdout.strip()
+            return {"commit": rev, "dirty": bool(dirty)}
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    return {"commit": None, "dirty": None}
+
+
+def str_col(df, c):
+    return df[c].astype("string").fillna("").to_numpy(object)
+
+
+# ---------------------------------------------------------------- S1
+def read(path: Path) -> dict:
+    df = pd.read_csv(path, low_memory=False)
+    ts = pd.to_numeric(df["ts_SQ"], errors="coerce").to_numpy(float)
+    if not np.all(np.diff(ts) == C.TS_STEP):
+        raise ValueError(f"{path.name}: ts_SQ is not a regular grid of step {C.TS_STEP}")
+    cols = list(df.columns)
+    blocks = {}
+    for b in C.BLOCK_ORDER:
+        tcol, xyz, _ = C.BLOCKS[b]
+        i = cols.index(tcol)
+        if cols[i + 1:i + 4] != xyz:
+            raise ValueError(f"{path.name}: unexpected columns after {tcol}: {cols[i + 1:i + 4]}")
+        x = df[xyz].apply(pd.to_numeric, errors="coerce").to_numpy(float)
+        ok = np.isfinite(x).all(1) & ~(x == 0).all(1)
+        nu = max((len(np.unique(x[ok, k])) for k in range(3)), default=0) if ok.any() else 0
+        if nu < C.MIN_UNIQUE:
+            ok[:] = False                                   # block without signal (user1, 2, 4 SB)
+        blocks[b] = (x, ok)
+    act = str_col(df, C.ACT_COL)
+    bad = set(np.unique(act)) - KNOWN_ACTIVITE
+    if bad:
+        raise ValueError(f"{path.name}: unknown activite values {bad}")
+    return dict(ts=ts.astype(np.int64), blocks=blocks, fam={c: str_col(df, c) for c in C.FAMILY_COLS},
+                cat=str_col(df, C.CAT_COL), act=act, n=len(df))
+
+
+# ---------------------------------------------------------------- one participant
+def process(user: str, raw: dict, sens_off: dict, lab_off: dict, long_runs: list, vindex: dict):
+    n = raw["n"]
+    stats = {"participant": user}
+
+    # S2 sensor alignment
+    x50, avail = [], []
+    stats["sensors"] = {}
+    for b in C.BLOCK_ORDER:
+        dev = C.BLOCKS[b][2]
+        plan = sync.device_plan(sens_off, user, dev)
+        x, a = sync.align_block(*raw["blocks"][b], plan)
+        x50.append(x); avail.append(a)
+        stats["sensors"][b] = dict(device=dev, status=plan["status"], shift_s=plan["shift_s"] if plan["usable"] else None)
+
+    # S4 anomaly masks (CSV label time), applied to the family columns
+    fam_mask, act_mask = anomalies.masks(long_runs, user, n, raw["act"])
+    fam = {c: np.where(fam_mask[c], "", raw["fam"][c]).astype(object) for c in C.FAMILY_COLS}
+
+    # S3 label alignment (labels and masks move together)
+    d = alignment.shift_s(lab_off, user)
+    fam = {c: alignment.shift_labels(v, d) for c, v in fam.items()}
+    act = alignment.shift_labels(raw["act"], d)
+    act_mask = alignment.shift_labels(act_mask, d, False)
+    fam_mask = {cc: alignment.shift_labels(m, d, False) for cc, m in fam_mask.items()}
+    body_mask = fam_mask[C.BODY_COL]
+    any_mask = act_mask | np.any(np.stack(list(fam_mask.values())), axis=0)
+    stats["label_shift_s"] = d
+
+    # S5 targets at 50 Hz
+    ann = annotated_mask(fam)
+    l2s = encode_l2(act)
+    l2s[act_mask] = C.IGNORE
+    post = posture_states(fam[C.BODY_COL], ann)
+    s_all = mask_posture_after(post.state_all, body_mask, post.transitions)
+    s_ann = s_all.copy(); s_ann[~ann] = C.IGNORE
+    w = walk_targets(fam[C.LEG_COL])
+    t = transition_targets(fam[C.BODY_COL])
+
+    # S6 step grid
+    T = n // C.STEP
+    L = T * C.STEP
+    c = step_centres(n)
+    l2 = l2s[c]
     arrays = {
-        "ts": rec.ts.astype(np.int64),
-        "acc50": rec.acc.astype(np.float32),
-        "usable50": rec.usable,
-        "phone50": rec.extra.astype(np.float32),          # phone ACC xyz, phone GYR xyz
-        "phone_usable50": rec.extra_usable,
-        "l2": l2.astype(np.int8),
-        "l1": l1_from_l2(l2).astype(np.int8),
-        "s": post.state[centres].astype(np.int8),          # masked on unannotated rows
-        "s_all": post.state_all[centres].astype(np.int8),  # not masked on unannotated rows
-        "annotated": ann[centres],
-        "fam": np.stack([[vocab_index[v] for v in rec.families[c][centres]] for c in C.FAMILY_COLS],
-                        axis=1).astype(np.int16),
+        "ts": raw["ts"][:L],
+        "x50": np.concatenate(x50, axis=1)[:L].astype(np.float32),          # 5 blocks x 3 axes, NaN = unavailable
+        "avail50": np.stack(avail, axis=1)[:L],                               # (L, 5) bool
+        "l2": l2.astype(np.int8), "l1": l1_from_l2(l2).astype(np.int8),
+        "s": s_all[c].astype(np.int8), "s_annotated": s_ann[c].astype(np.int8),
+        "w": w[c].astype(np.int8), "t": t[c].astype(np.int8),
+        "annotated": ann[c], "masked_anomaly": any_mask[c],
+        "fam": np.stack([[vindex[v] for v in fam[col][c]] for col in C.FAMILY_COLS], axis=1).astype(np.int16),
+        "l2_raw": encode_l2(raw["act"])[c].astype(np.int8),                   # activite as in the CSV (no shift, no mask)
     }
 
-    # --- statistics for the G0 report ------------------------------------------------
+    # statistics (seconds at 50 Hz on the label rows, steps for the 0.1-s grid)
     lab = np.flatnonzero(ann)
-    region = slice(lab[0], lab[-1] + 1) if len(lab) else slice(0, 0)
-    n_hier, agree = hierarchy_agreement(rec.activite, rec.categorie, rec.families)
-    n_walk, walk_ok = walk_segments(rec.families[C.LEG_COL])
-    n_sup, differ = centre_vs_majority(l2_samples)
-    stats = {
-        "participant": rec.participant, "source": rec.source, "sha256": rec.sha256,
-        "samples": rec.n, "steps": len(centres),
-        "duration_s": rec.n / C.FS,
-        "labelled_region_s": (region.stop - region.start) / C.FS,
-        "unusable_in_labelled_region_pct": {
-            **{k: float(100 * (~rec.usable[region, i]).mean()) for i, k in enumerate(C.SENSOR_ORDER)},
-            **{k: float(100 * (~rec.extra_usable[region, i]).mean()) for i, k in enumerate(C.EXTRA_ORDER)}},
-        "degenerate_sensor": rec.degenerate,
-        "max_unique_values_per_axis": rec.n_unique,
-        "annotated_rows_in_region_pct": float(100 * ann[region].mean()),
-        "steps_with_l2": int((l2 != C.IGNORE).sum()),
-        "steps_with_s": int((arrays["s"] != C.IGNORE).sum()),
-        "steps_annotated": int(arrays["annotated"].sum()),
-        "l2_step_counts": {C.L2_CLASSES[i]: int((l2 == i).sum()) for i in range(len(C.L2_CLASSES))},
-        "s_step_counts": {C.S_CLASSES[i]: int((arrays["s"] == i).sum()) for i in range(len(C.S_CLASSES))},
-        "steps_with_s_all": int((arrays["s_all"] != C.IGNORE).sum()),
-        "s_all_step_counts": {C.S_CLASSES[i]: int((arrays["s_all"] == i).sum()) for i in range(len(C.S_CLASSES))},
-        "hierarchy_rows": n_hier, "hierarchy_agree": agree,
-        "sm_consistent_pairs": post.consistent_pairs, "sm_inconsistent_pairs": post.inconsistent_pairs,
-        "sm_pairs_with_other": post.pairs_with_other,
-        "walk_segments": n_walk, "walk_segments_ge_1s": walk_ok,
-        **walking_state_counts(rec.families[C.LEG_COL], post.state),
-        "walking_rows_sitting_or_lying_s_all":
-            walking_state_counts(rec.families[C.LEG_COL], post.state_all)["walking_rows_sitting_or_lying"],
-        "centre_supervised_steps": n_sup, "centre_differs_from_majority": differ,
-        "lookback": {str(k): v for k, v in lookback_check(post.transitions, post.state, DELTAS).items()},
-        "last_valid_state": last_valid_state_check(post.transitions, post.state),
-    }
+    region = slice(lab[0], lab[-1] + 1)
+    sec = lambda m: float(np.sum(m) / C.FS)
+    stats.update({
+        "samples": n, "steps": T, "duration_s": n / C.FS,
+        "labelled_region_s": (region.stop - region.start) / C.FS, "annotated_s": sec(ann),
+        "availability_in_labelled_region_pct": {b: float(100 * avail[i][region].mean()) for i, b in enumerate(C.BLOCK_ORDER)},
+        "l2_s": {k: sec(l2s == i) for k, i in L2_INDEX.items()},
+        "l2_supervised_s": sec(l2s != C.IGNORE),
+        "activite_masked_s": sec(act_mask), "family_masked_s": {cc: sec(fam_mask[cc]) for cc in C.FAMILY_COLS},
+        "s_s": {C.S_CLASSES[i]: sec(s_all == i) for i in range(len(C.S_CLASSES))},
+        "s_supervised_s": sec(s_all != C.IGNORE),
+        "w_s": {"walk": sec(w == 1), "not_walk": sec(w == 0)}, "t_s": {"transition": sec(t == 1), "no_transition": sec(t == 0)},
+        "posture_pairs": {"chain": post.consistent_pairs, "break": post.inconsistent_pairs, "with_autre_transition": post.pairs_with_other},
+        "content_sha256": content_sha256(arrays),
+    })
     return arrays, stats
 
 
+# ---------------------------------------------------------------- data card
+def data_card(man: dict) -> str:
+    P = man["participants"]
+    users = [p["participant"] for p in P]
+    L = ["# Data card — processed data v2", "",
+         f"Built {man['created']} from git commit `{man['git']['commit']}`" + (" (uncommitted changes!)" if man["git"]["dirty"] else "") + ".",
+         "Plan: reports/design/2026-11-17_pipeline_v2_plan.md. Seconds are counted on 50-Hz rows.", "",
+         "## Per participant", "",
+         "| | " + " | ".join(users) + " |", "|---|" + "---|" * len(users)]
+    row = lambda name, f: L.append(f"| {name} | " + " | ".join(f(p) for p in P) + " |")
+    row("duration (s)", lambda p: f"{p['duration_s']:.0f}")
+    row("annotated (s)", lambda p: f"{p['annotated_s']:.0f}")
+    row("L2 supervised (s)", lambda p: f"{p['l2_supervised_s']:.0f}")
+    row("activite masked, anomaly (s)", lambda p: f"{p['activite_masked_s']:.1f}")
+    row("S supervised (s)", lambda p: f"{p['s_supervised_s']:.0f}")
+    row("W walk / not (s)", lambda p: f"{p['w_s']['walk']:.0f} / {p['w_s']['not_walk']:.0f}")
+    row("T transition / not (s)", lambda p: f"{p['t_s']['transition']:.0f} / {p['t_s']['no_transition']:.0f}")
+    row("label shift (s)", lambda p: f"{p['label_shift_s']:+.2f}")
+    for b in C.BLOCK_ORDER:
+        row(f"{b}: shift (s) / available %", lambda p, b=b: (
+            f"{p['sensors'][b]['shift_s']:+.2f} / {p['availability_in_labelled_region_pct'][b]:.0f}"
+            if p["sensors"][b]["shift_s"] is not None else "not used"))
+    L += ["", "Availability = share of the labelled region where the block has a valid, aligned sample.", "",
+          "## L2 classes (seconds) — main target `activite`", "",
+          "| class | " + " | ".join(users) + " | total | participants |", "|---|" + "---|" * (len(users) + 2)]
+    for k in C.L2_CLASSES:
+        v = [p["l2_s"][k] for p in P]
+        L.append(f"| {k} | " + " | ".join(f"{x:.1f}" for x in v) + f" | {sum(v):.1f} | {sum(x > 0 for x in v)} |")
+    L += ["", "## Posture S (seconds)", "", "| state | " + " | ".join(users) + " | total |", "|---|" + "---|" * (len(users) + 1)]
+    for s in C.S_CLASSES:
+        v = [p["s_s"][s] for p in P]
+        L.append(f"| {s} | " + " | ".join(f"{x:.0f}" for x in v) + f" | {sum(v):.0f} |")
+    return "\n".join(L) + "\n"
+
+
+# ---------------------------------------------------------------- main
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw", default=str(C.RAW_2022))
-    ap.add_argument("--out", default=str(C.PROCESSED))
+    ap.add_argument("--out", default=str(C.PROJECT / "data" / "processed" / "v2"))
     args = ap.parse_args(argv)
-    raw, out = Path(args.raw), Path(args.out)
+    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    files = {p: next(raw.glob(f"{p}-*.csv")) for p in PARTICIPANTS}
-    recs = [load_recording(files[p]) for p in PARTICIPANTS]
-    vocab = family_vocab(recs)
+    sens_off, lab_off, long_runs = sync.load_offsets(), alignment.load_offsets(), anomalies.load_runs()
+    files = {p: next(C.RAW_2022.glob(f"{p}-*.csv")) for p in PARTICIPANTS}
+    raws = {p: read(files[p]) for p in PARTICIPANTS}
+    vocab = sorted({v for r in raws.values() for c in C.FAMILY_COLS for v in r["fam"][c]})
     vindex = {v: i for i, v in enumerate(vocab)}
 
-    report = {"created": datetime.now().isoformat(timespec="seconds"), "code_version": __version__,
-              "family_vocab": vocab, "l2_classes": C.L2_CLASSES, "l1_classes": C.L1_CLASSES,
-              "s_classes": C.S_CLASSES, "participants": []}
-    for rec in recs:
-        arrays, stats = process(rec, vindex)
-        np.savez_compressed(out / f"{rec.participant}.npz", **arrays)
-        report["participants"].append(stats)
-        print(f"{rec.participant}: {stats['steps']} steps, L2 on {stats['steps_with_l2']}, S on {stats['steps_with_s']}")
-
-    tot = lambda k: sum(p[k] for p in report["participants"])
-    report["totals"] = {k: tot(k) for k in [
-        "steps", "steps_with_l2", "steps_with_s", "steps_with_s_all", "hierarchy_rows", "hierarchy_agree",
-        "sm_consistent_pairs", "sm_inconsistent_pairs", "sm_pairs_with_other",
-        "walk_segments", "walk_segments_ge_1s", "walking_rows", "walking_rows_known_state",
-        "walking_rows_sitting_or_lying", "walking_rows_sitting_or_lying_s_all", "centre_supervised_steps", "centre_differs_from_majority"]}
-    (out / "phase0_report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps(report["totals"], indent=1))
+    man = {"created": datetime.now().isoformat(timespec="seconds"), "pipeline": "v2", "code_version": __version__,
+           "git": git_state(), "python": platform.python_version(), "numpy": np.__version__, "pandas": pd.__version__,
+           "raw": {p: {"file": files[p].name, "sha256": sha256_file(files[p])} for p in PARTICIPANTS},
+           "params": {f.name: sha256_file(f) for f in sorted(C.PARAMS.glob("*.json"))},
+           "blocks": C.BLOCK_ORDER, "block_columns": {b: C.BLOCKS[b][1] for b in C.BLOCK_ORDER},
+           "family_cols": C.FAMILY_COLS, "family_vocab": vocab,
+           "l2_classes": C.L2_CLASSES, "l1_classes": C.L1_CLASSES, "s_classes": C.S_CLASSES,
+           "step_samples": C.STEP, "ignore": C.IGNORE, "participants": []}
+    for p in PARTICIPANTS:
+        arrays, stats = process(p, raws[p], sens_off, lab_off, long_runs, vindex)
+        np.savez_compressed(out / f"{p}.npz", **arrays)
+        man["participants"].append(stats)
+        print(f"{p}: {stats['steps']} steps; L2 {stats['l2_supervised_s']:.0f} s; S {stats['s_supervised_s']:.0f} s; "
+              f"masked activite {stats['activite_masked_s']:.1f} s; sha {stats['content_sha256'][:12]}")
+    (out / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False), encoding="utf-8")
+    (out / "data_card.md").write_text(data_card(man), encoding="utf-8")
+    print(f"written {out}")
 
 
 if __name__ == "__main__":

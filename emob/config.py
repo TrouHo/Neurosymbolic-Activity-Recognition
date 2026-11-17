@@ -10,7 +10,7 @@ from pathlib import Path
 CODE = Path(__file__).resolve().parents[1]                      # .../code
 PROJECT = Path(os.environ.get("EMOB_PROJECT", CODE.parent))
 RAW_2022 = Path(os.environ.get("EMOB_RAW_2022", PROJECT / "data" / "raw" / "capture_2022-01-26"))
-PROCESSED = Path(os.environ.get("EMOB_PROCESSED", PROJECT / "data" / "processed" / "v1"))
+PROCESSED = Path(os.environ.get("EMOB_PROCESSED", PROJECT / "data" / "processed" / "v2"))
 PARAMS = CODE / "params"            # frozen parameters estimated from the data (committed to git)
 
 # --- sampling -------------------------------------------------------------
