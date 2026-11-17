@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to config.json and edit. Paths are local; nothing is uploaded. Source data roots are opened read-only.",
+  "data_roots": ["D:\\Projects\\EmoB\\data\\raw"],
+  "scan_dirs": [
+    "D:\\Projects\\EmoB\\data\\raw\\capture_2021-05-31",
+    "D:\\Projects\\EmoB\\data\\raw\\capture_2022-01-26"
+  ],
+  "output_dir": "D:\\Projects\\EmoB\\reports\\review_app",
+  "pairing_rules": [
+    {
+      "name": "partN_data.csv <-> partN_video.mp4",
+      "csv_regex": "^part(?P<key>\\d+)_data\\.csv$",
+      "video_regex": "^part(?P<key>\\d+)_video\\.mp4$"
+    },
+    {
+      "name": "userN-*.csv <-> Measurement_userN.mp4",
+      "csv_regex": "^user(?P<key>\\d+)-.*\\.csv$",
+      "video_regex": "^Measurement_user(?P<key>\\d+)\\.mp4$"
+    }
+  ],
+  "host": "127.0.0.1",
+  "port": 8765
+}
