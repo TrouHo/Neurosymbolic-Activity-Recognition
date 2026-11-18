@@ -1,6 +1,15 @@
-"""Run a grid of experiments in parallel worker processes (skips runs that already have metrics.json).
+"""Run the experiment grid phase by phase in parallel worker processes.
 
-    python -m emob.run_grid --phase 1 --workers 6 --out ~/emob/results/phase1
+Runs that already have metrics.json are skipped, so an interrupted grid can simply be restarted.
+Phases (Explanation.md §1; experiment plan §4; TCN first, DeepConvLSTM after gate G1):
+  1   B0 (Random Forest), B1, B2                          8 folds x 3 seeds
+  2a  NS1, lam_hier in GRID                               -> lam_hier selected per fold on validation
+  2b  NS2, lam_hier = selected for NS1 in that fold,
+      (lam_hard, lam_soft) in GRID^2 with lam_soft <= lam_hard; plus the fixed set (fairness check)
+  3   NS3 with the lambdas selected for NS2 in that fold; plus the fixed set
+Selection uses emob.summarize.select_lambda (validation participant only).
+
+    python -m emob.run_grid --phase 1 --workers 4 --out ~/emob/results
 """
 from __future__ import annotations
 
@@ -10,39 +19,91 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+GRID = [0.1, 0.3, 1.0]
+SEEDS = [0, 1, 2]
+FOLDS = range(8)
 
-def phase1_jobs(inputs: str) -> list[list[str]]:
+
+def ns_fixed():
+    from emob.summarize import FIXED
+    return FIXED
+
+
+def common(fold, seed, frac):
+    return ["--fold", str(fold), "--seed", str(seed), "--fraction", f"{frac:g}"]
+
+
+def jobs_for(phase: str, backbones: list[str], fractions: list[float], out: Path) -> list[list[str]]:
     jobs = []
-    for frac in (1.0, 0.25):
-        for seed in (0, 1, 2):
-            for fold in range(8):
-                common = ["--fold", str(fold), "--seed", str(seed), "--fraction", str(frac), "--inputs", inputs]
-                jobs.append(["emob.baselines.rf", *common])
-                jobs.append(["emob.train", "--model", "B1", *common])
-                jobs.append(["emob.train", "--model", "B1+S", *common])
-                if frac == 1.0:                          # one comparison: S trained on the masked variant
-                    jobs.append(["emob.train", "--model", "B1+S", "--s-variant", "s", *common])
+    rows = None
+    if phase in ("2b", "3"):
+        from emob.summarize import collect
+        rows = collect(out)
+    from emob.summarize import select_lambda
+    for frac in fractions:
+        for fold in FOLDS:
+            for seed in SEEDS:
+                c = common(fold, seed, frac)
+                if phase == "1":
+                    if "tcn" in backbones:                       # B0 once, independent of the backbone
+                        jobs.append(["emob.baselines.rf", *c])
+                    for bb in backbones:
+                        jobs += [["emob.train", "--model", m, "--backbone", bb, *c] for m in ("B1", "B2")]
+                elif phase == "2a":
+                    for bb in backbones:
+                        jobs += [["emob.train", "--model", "NS1", "--backbone", bb, *c, "--lam-hier", f"{h:g}"] for h in GRID]
+                elif phase in ("2b", "3"):
+                    for bb in backbones:
+                        name = {"tcn": "TCN", "lstm": "LSTM"}[bb]
+                        model = "NS2" if phase == "2b" else "NS3"
+                        fixed = ns_fixed()[model]
+                        lam_sets = [fixed]
+                        if phase == "2b":
+                            sel = select_lambda(rows, name, "NS1", fold, frac)
+                            if sel is None:
+                                print(f"skip NS2 {name} fold {fold} frac {frac:g}: NS1 not finished", flush=True)
+                            else:
+                                lam_sets += [(sel[0], d, s) for d in GRID for s in GRID if s <= d]
+                        else:
+                            sel = select_lambda(rows, name, "NS2", fold, frac)
+                            if sel is None:
+                                print(f"skip NS3 {name} fold {fold} frac {frac:g}: NS2 not finished", flush=True)
+                            else:
+                                lam_sets.append(sel)
+                        for h, d, s in dict.fromkeys(lam_sets):
+                            jobs.append(["emob.train", "--model", model, "--backbone", bb, *c,
+                                         "--lam-hier", f"{h:g}", "--lam-hard", f"{d:g}", "--lam-soft", f"{s:g}"])
+                else:
+                    raise ValueError(phase)
     return jobs
 
 
 def run_name(job: list[str]) -> str:
-    args = job[1:]
-    get = lambda k, d=None: args[args.index(k) + 1] if k in args else d
-    model = "B0" if job[0] == "emob.baselines.rf" else get("--model")
-    return (f"{model}_{get('--inputs', 'MP')}_frac{float(get('--fraction', 1.0)):g}_"
-            f"{get('--s-variant', 's_all')}_fold{get('--fold')}_seed{get('--seed', 0)}")
+    if job[0] == "emob.baselines.rf":
+        args = job[1:]
+        get = lambda k: args[args.index(k) + 1]
+        return f"RF-B0_frac{float(get('--fraction')):g}_fold{get('--fold')}_seed{get('--seed')}"
+    from emob.train import parse, run_id
+    return run_id(parse(job[1:]))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase", type=int, default=1)
-    ap.add_argument("--inputs", default="MP")
-    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--phase", choices=["1", "2a", "2b", "3"], required=True)
+    ap.add_argument("--backbones", nargs="+", choices=["tcn", "lstm"], default=["tcn"])
+    ap.add_argument("--fractions", nargs="+", type=float, default=[1.0])
+    ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--dry-run", action="store_true", help="list the jobs without running them")
     a = ap.parse_args(argv)
     out = Path(a.out).expanduser()
-    jobs = [j for j in phase1_jobs(a.inputs) if not (out / run_name(j) / "metrics.json").exists()]
+    jobs = [j for j in jobs_for(a.phase, a.backbones, a.fractions, out)
+            if not (out / run_name(j) / "metrics.json").exists()]
     print(f"{len(jobs)} runs to do", flush=True)
+    if a.dry_run:
+        for j in jobs:
+            print(run_name(j))
+        return
     logdir = out / "_logs"
     logdir.mkdir(parents=True, exist_ok=True)
 

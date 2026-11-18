@@ -12,7 +12,7 @@ Master research project (LIMOS, Université Clermont Auvergne; eMOB project with
 - Rules A1–A7 are turned into differentiable losses.
 - Evaluation: leave-one-subject-out over 8 participants.
 
-> Status (2026-11-17): data pipeline v2 complete (gate G 10/10). Training code is from the pilot (v1 data layout) and must be updated to the v2 files before training.
+> Status (2026-11-18): data pipeline v2 complete (gate G 10/10); training, rule losses A1–A7, evaluation and the experiment grid run on data v2 (67 tests pass on the training server).
 
 ## Data
 
@@ -73,6 +73,24 @@ PyTorch is needed for training (installed on the training server; tests that nee
 | S5 | `emob/data/labels.py` | Targets: L2 (20 classes, `activite`), L1 (7), S (6 postures), W (walking), T (posture transition) |
 | S6–S7 | `emob/data/build.py` | 0.1-s step grid; `userX.npz`, `manifest.json` (git commit, hashes, statistics), `data_card.md` |
 | G | `emob/data/check.py` | Rules A1–A7 on the targets, residual sensor lag, reproducibility |
+
+## Training and evaluation
+
+| Module | What it does |
+|---|---|
+| `emob/data/dataset.py`, `features.py`, `normalize.py`, `splits.py` | Fold assembly: 13 orientation-invariant channels + 4 device flags, z-score on training participants, label fractions, modality dropout, sensor configurations ALL / PHONE / HB |
+| `emob/models/` | TCN (main) and DeepConvLSTM (control) backbones; heads L2, L1, S, W, T |
+| `emob/rules_spec.py`, `emob/rules_loss.py` | Rules A1–A7: constants and differentiable losses (product fuzzy logic; A1 semantic loss; A7 Gödel min) |
+| `emob/train.py` | One run: B1, B2, NS1, NS2, NS3 × TCN / LSTM, one fold, seed, label fraction, lambda set |
+| `emob/baselines/rf.py` | B0: window features + Random Forest, one forest per sensor configuration |
+| `emob/metrics.py`, `emob/evaluate.py` | Frame and segment metrics; rule violations A1–A7 (same definitions as the losses) |
+| `emob/run_grid.py` | Phases 1 (B0, B1, B2), 2a (NS1 lambda grid), 2b (NS2 grid), 3 (NS3); skips finished runs |
+| `emob/summarize.py` | Lambda selection on validation; tables; paired comparisons (exact Wilcoxon, Holm) |
+
+```bash
+python -m emob.run_grid --phase 1 --workers 4 --out ~/emob/results
+python -m emob.summarize --results ~/emob/results --out ~/emob/results/summary.json
+```
 
 `userX.npz` keys:
 - `x50` (N × 15, 50 Hz, NaN where unavailable) and `avail50` (N × 5): blocks phone ACC, phone GYR, hand, belt, leg ACC;

@@ -28,6 +28,14 @@ def per_class_f1(cm: np.ndarray) -> np.ndarray:
     return np.divide(2 * tp, denom, out=np.full(len(tp), np.nan), where=denom > 0)
 
 
+def binary_f1(gt: np.ndarray, pred: np.ndarray) -> float | None:
+    """F1 of the positive class (1) over supervised steps; None if neither has a positive."""
+    ok = gt != C.IGNORE
+    g, p = gt[ok] == 1, pred[ok] == 1
+    tp, fp, fn = int((g & p).sum()), int((~g & p).sum()), int((g & ~p).sum())
+    return 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else None
+
+
 def macro_f1(cm: np.ndarray, classes: list[int] | None = None) -> float:
     """Mean F1 over classes present in the ground truth (optionally restricted to `classes`)."""
     present = np.flatnonzero(cm.sum(1) > 0)
@@ -100,23 +108,59 @@ def segment_metrics(gt: np.ndarray, pred: np.ndarray) -> dict:
             "f1@50": f1_at_k(g, p, 0.50), "n_seg_gt": len(segments(g)), "n_seg_pred": len(segments(p))}
 
 
-# ----------------------------------------------------------------------------- rules on predictions
-def rule_violations(l1: np.ndarray, l2: np.ndarray, s: np.ndarray | None,
-                    walk_idx: int, l2_to_l1: np.ndarray, sit_lie_idx: list[int],
-                    transition_from: dict[int, int], min_walk_steps: int = 10) -> dict:
-    """Violation rates of rules A1–A4 in a predicted (argmax) sequence over all steps.
+# ----------------------------------------------------------------------------- rules A1–A7
+def _rate(viol: int, n: int, **extra) -> dict:
+    return {"viol": int(viol), "n": int(n), "rate": (viol / n if n else None), **extra}
 
-    A1: share of steps where L1 is not the parent of L2.
-    A2: share of predicted posture-transition onsets whose predicted state one step before is not X.
-    A3: share of predicted walking segments shorter than `min_walk_steps`.
-    A4: share of predicted walking steps whose predicted state is sitting or lying.
+
+def rule_violations(l2=None, l1=None, s=None, w=None, t=None) -> dict:
+    """Violations of rules A1–A7 in label sequences (predictions or ground truth) at 0.1-s steps.
+
+    Same definitions as the rule losses (emob.rules_loss); C.IGNORE = unknown, never a violation.
+    Heads that are None are skipped (e.g. B1 has no S, W, T).
+      A1  steps where L1 is not the parent of L2                   / steps with both known
+      A2  onsets of a posture transition X_Y where S(t-1) != X     / onsets with S(t-1) known
+      A3  posture changes with no T = 1 within +-1 s               / changes (10 <= t <= T-11)
+      A4  walking steps with S in {sitting, lying}                 / walking steps with S known
+      A5  walking steps with S in {kneeling, squatting}            / same
+      A6  walking runs shorter than 1 s                            / runs bounded by W = 0 inside the sequence
+      A7  runs of a specific class longer than 5 s                 / runs of the 16 specific classes
     """
-    out = {"A1": float(np.mean(l2_to_l1[l2] != l1))}
-    walk_segs = [x for x in segments(l2) if x[0] == walk_idx]
-    out["A3"] = float(np.mean([e - s_ < min_walk_steps for _, s_, e in walk_segs])) if walk_segs else 0.0
-    if s is not None:
-        walk = l2 == walk_idx
-        out["A4"] = float(np.mean(np.isin(s[walk], sit_lie_idx))) if walk.any() else 0.0
-        onsets = [(lab, st) for lab, st, _ in segments(l2) if lab in transition_from and st > 0]
-        out["A2"] = float(np.mean([s[st - 1] != transition_from[lab] for lab, st in onsets])) if onsets else 0.0
+    from emob.data.labels import L2_TO_L1_IDX
+    from emob.rules_spec import (A3_HALF_WINDOW, KNEEL_SQUAT, MAX_SPECIFIC_STEPS, MIN_WALK_STEPS,
+                                 SIT_LIE, SPECIFIC_IDX, TRANSITION_FROM, TRANSITION_IDX)
+    I = C.IGNORE
+    out = {}
+    if l2 is not None and l1 is not None:
+        k = (l2 != I) & (l1 != I)
+        out["A1"] = _rate((L2_TO_L1_IDX[l2[k]] != l1[k]).sum(), k.sum())
+    if l2 is not None and s is not None:
+        frm = dict(zip(TRANSITION_IDX, TRANSITION_FROM))
+        n = v = 0
+        for tt in range(1, len(l2)):
+            c = int(l2[tt])
+            if c in frm and l2[tt - 1] != c and s[tt - 1] != I:
+                n += 1
+                v += int(s[tt - 1] != frm[c])
+        out["A2"] = _rate(v, n)
+    if s is not None and t is not None:
+        T, h = len(s), A3_HALF_WINDOW
+        n = v = 0
+        for tt in range(h, T - h):
+            if s[tt] != I and s[tt - 1] != I and s[tt] != s[tt - 1]:
+                n += 1
+                v += int(not (t[tt - h:tt + h + 1] == 1).any())
+        out["A3"] = _rate(v, n)
+    if w is not None and s is not None:
+        walk = (w == 1) & (s != I)
+        out["A4"] = _rate(np.isin(s[walk], SIT_LIE).sum(), walk.sum())
+        out["A5"] = _rate(np.isin(s[walk], KNEEL_SQUAT).sum(), walk.sum())
+    if w is not None:
+        runs = [(a, b) for lab, a, b in segments(np.asarray(w)) if lab == 1
+                and a > 0 and b < len(w) and w[a - 1] == 0 and w[b] == 0]
+        out["A6"] = _rate(sum(b - a < MIN_WALK_STEPS for a, b in runs), len(runs))
+    if l2 is not None:
+        runs = [(a, b) for lab, a, b in segments(np.asarray(l2)) if lab in SPECIFIC_IDX]
+        long_ = [b - a for a, b in runs if b - a > MAX_SPECIFIC_STEPS]
+        out["A7"] = _rate(len(long_), len(runs), excess_steps=int(sum(x - MAX_SPECIFIC_STEPS for x in long_)))
     return out
