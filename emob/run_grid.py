@@ -5,7 +5,7 @@ Phases (Explanation.md §1; experiment plan §4; TCN first, DeepConvLSTM after g
   1   B0 (Random Forest), B1, B2                          8 folds x 3 seeds
   2a  NS1, lam_hier in GRID                               -> lam_hier selected per fold on validation
   2b  NS2, lam_hier = selected for NS1 in that fold,
-      (lam_hard, lam_soft) in GRID^2 with lam_soft <= lam_hard; plus the fixed set (fairness check)
+      (lam_hard, lam_soft) in GRID_RULES^2 with lam_soft <= lam_hard; plus the fixed set (fairness check)
   3   NS3 with the lambdas selected for NS2 in that fold; plus the fixed set
 Selection uses emob.summarize.select_lambda (validation participant only).
 
@@ -20,6 +20,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 GRID = [0.1, 0.3, 1.0]
+# lam_hard / lam_soft grid of NS2, extended 2026-11-18 with 3 and 10: the rule losses of A2, A3, A6
+# are non-zero only around rare events (posture-transition onsets, short walking runs) but are
+# averaged over every step, so lambdas <= 1 moved the arg-max violations only a little
+# (diagnostics/rule_loss_train_vs_test.py). lam_hier keeps GRID (A1 acts on every step).
+GRID_RULES = [0.1, 0.3, 1.0, 3.0, 10.0]
 SEEDS = [0, 1, 2]
 FOLDS = range(8)
 
@@ -63,7 +68,7 @@ def jobs_for(phase: str, backbones: list[str], fractions: list[float], out: Path
                             if sel is None:
                                 print(f"skip NS2 {name} fold {fold} frac {frac:g}: NS1 not finished", flush=True)
                             else:
-                                lam_sets += [(sel[0], d, s) for d in GRID for s in GRID if s <= d]
+                                lam_sets += [(sel[0], d, s) for d in GRID_RULES for s in GRID_RULES if s <= d]
                         else:
                             sel = select_lambda(rows, name, "NS2", fold, frac)
                             if sel is None:
