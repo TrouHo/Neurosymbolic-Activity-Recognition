@@ -23,9 +23,20 @@ from pathlib import Path
 
 import numpy as np
 
-SCORES = ["l2_macro_f1", "l2_macro_f1_no_autre", "l1_macro_f1", "s_macro_f1", "w_f1", "t_f1"]
+from emob.metrics import macro_f1
+from emob.rules_spec import TRANSITION_IDX
+
+SCORES = ["l2_macro_f1", "l2_macro_f1_no_autre", "l2_macro_f1_transitions", "l1_macro_f1", "s_macro_f1",
+          "w_f1", "t_f1"]
 SEG = ["edit", "f1@10", "f1@25", "f1@50"]
 RULES = ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
+MAIN = "l2_macro_f1"
+# Secondary metrics, declared after phases 1-2 and BEFORE phase 3 (label fractions, NS3) and NS4
+# (decision 2026-11-18). All are reported, favourable or not; none replaces the main metric.
+# Rationale: the rules act on posture transitions and on segment structure, which the 20-class
+# frame macro-F1 (dominated by 13 classes with F1 <= 0.2 and a few seconds per test participant)
+# hardly reflects.
+SECONDARY = ["l2_macro_f1_transitions", "seg_f1@25", "seg_edit", "l1_macro_f1"] + [f"viol_{r}" for r in RULES]
 # Fixed lambdas for the fairness check "NS2 without selection" (middle of the grid, chosen a priori)
 FIXED = {"NS1": (0.3, 0.0, 0.0), "NS2": (0.3, 0.3, 0.3), "NS3": (0.3, 0.3, 0.3)}
 COMPARISONS = [("B2", "B1"), ("NS1", "B2"), ("NS2", "B2"), ("NS3", "NS2"), ("NS2-fixed", "B2"), ("B1", "B0")]
@@ -50,6 +61,8 @@ def collect(root: Path) -> list[dict]:
             r = dict(base, config=cfg)
             for k in SCORES:
                 r[k] = t.get(k)
+            if r["l2_macro_f1_transitions"] is None:          # runs evaluated before the key existed
+                r["l2_macro_f1_transitions"] = macro_f1(np.array(t["l2_confusion"]), TRANSITION_IDX)
             for k in SEG:
                 r["seg_" + k] = t["l2_segments"][k]
             for k in RULES:
@@ -158,7 +171,7 @@ def compare(rows: list[dict], metric: str = "l2_macro_f1") -> list[dict]:
             d = np.array([A[p] - B[p] for p in common])
             res.append({"comparison": name, "config": cfg, "fraction": frac, "metric": metric,
                         "n": len(common), "mean_diff": float(d.mean()), "sd_diff": float(d.std(ddof=1)) if len(d) > 1 else 0.0,
-                        "improved": int((d > 0).sum()), "per_participant": dict(zip(common, d.round(4).tolist())),
+                        "improved": int((d < 0).sum() if metric.startswith("viol_") else (d > 0).sum()), "per_participant": dict(zip(common, d.round(4).tolist())),
                         "wilcoxon_p": wilcoxon_exact(d)})
         for r, p in zip(res, holm([r["wilcoxon_p"] for r in res])):
             r["holm_p"] = p
@@ -193,8 +206,11 @@ def main(argv=None):
            for r in sel if r["model"].startswith("NS") and not r["model"].endswith("fixed")}
     res = {"n_runs": len({r["run_id"] for r in rows}), "selected_lambda": lam, "table": table(sel),
            "per_participant_l2": {"|".join(map(str, k)): v for k, v in per_participant(sel, "l2_macro_f1").items()},
-           "comparisons": compare(sel), "lambda_grid": table([dict(r, model=f"{r['model']}{list(r['lam'])}") for r in rows
-                                                               if r["model"].startswith("NS")])}
+           "comparisons": compare(sel, MAIN),
+           "comparisons_secondary": {m: compare(sel, m) for m in SECONDARY},
+           "variants": table([dict(r, model=f"{r['model']}[{r['variant']}]") for r in rows if r["variant"]]),
+           "lambda_grid": table([dict(r, model=f"{r['model']}{list(r['lam'])}") for r in rows
+                                 if r["model"].startswith("NS")])}
     Path(a.out).expanduser().write_text(json.dumps(res, indent=1), encoding="utf-8")
     print(f"{res['n_runs']} runs")
     for k, e in res["table"].items():
@@ -206,6 +222,12 @@ def main(argv=None):
         p = lambda x: "-" if x is None else f"{x:.4f}"
         print(f"{c['config']:5s} frac{c['fraction']:<4g} {c['comparison']:28s} diff {c['mean_diff']:+.3f}±{c['sd_diff']:.3f}  "
               f"improved {c['improved']}/{c['n']}  p {p(c['wilcoxon_p'])}  Holm {p(c['holm_p'])}")
+    print("\nSecondary metrics (config ALL; 'improved' = lower for violation rates):")
+    for m, cs in res["comparisons_secondary"].items():
+        for c in cs:
+            if c["config"] == "ALL" and "B0" not in c["comparison"]:
+                print(f"{m:26s} frac{c['fraction']:<4g} {c['comparison']:28s} diff {c['mean_diff']:+.4f}  "
+                      f"improved {c['improved']}/{c['n']}  p {c['wilcoxon_p'] if c['wilcoxon_p'] is None else round(c['wilcoxon_p'], 4)}")
 
 
 if __name__ == "__main__":
