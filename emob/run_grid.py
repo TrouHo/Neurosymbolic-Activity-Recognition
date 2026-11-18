@@ -24,7 +24,11 @@ GRID = [0.1, 0.3, 1.0]
 # are non-zero only around rare events (posture-transition onsets, short walking runs) but are
 # averaged over every step, so lambdas <= 1 moved the arg-max violations only a little
 # (diagnostics/rule_loss_train_vs_test.py). lam_hier keeps GRID (A1 acts on every step).
-GRID_RULES = [0.1, 0.3, 1.0, 3.0, 10.0]
+# lam_hard = 10 was run once and then excluded (2026-11-18): the walking head W collapses (F1 0.72 ->
+# about 0.12 at every lam_soft): the model satisfies A4-A6 by never predicting walking. Those runs are
+# kept on disk and reported as sensitivity analysis; emob.summarize.EXCLUDED_LAM_HARD keeps them out
+# of the lambda selection.
+GRID_RULES = [0.1, 0.3, 1.0, 3.0]
 SEEDS = [0, 1, 2]
 FOLDS = range(8)
 

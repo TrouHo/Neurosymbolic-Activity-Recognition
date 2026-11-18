@@ -39,6 +39,9 @@ MAIN = "l2_macro_f1"
 SECONDARY = ["l2_macro_f1_transitions", "seg_f1@25", "seg_edit", "l1_macro_f1"] + [f"viol_{r}" for r in RULES]
 # Fixed lambdas for the fairness check "NS2 without selection" (middle of the grid, chosen a priori)
 FIXED = {"NS1": (0.3, 0.0, 0.0), "NS2": (0.3, 0.3, 0.3), "NS3": (0.3, 0.3, 0.3)}
+# lam_hard values outside the valid range (2026-11-18): at lam_hard = 10 the walking head collapses
+# (trivial solution of A4-A6, W F1 0.72 -> about 0.12). Excluded from selection, kept in "lambda_grid".
+EXCLUDED_LAM_HARD = {10.0}
 COMPARISONS = [("B2", "B1"), ("NS1", "B2"), ("NS2", "B2"), ("NS3", "NS2"), ("NS2-fixed", "B2"), ("B1", "B0")]
 
 
@@ -79,7 +82,8 @@ def select_lambda(rows: list[dict], backbone: str, model: str, fold: int, fracti
     """Lambda set with the best mean validation L2 macro-F1 over seeds (configuration-independent)."""
     by = defaultdict(dict)
     for r in rows:
-        if (r["backbone"], r["model"], r["fold"], r["fraction"], r["variant"]) == (backbone, model, fold, fraction, variant):
+        if (r["backbone"], r["model"], r["fold"], r["fraction"], r["variant"]) == (backbone, model, fold, fraction, variant) \
+                and r["lam"][1] not in EXCLUDED_LAM_HARD:
             by[tuple(r["lam"])][r["seed"]] = r["val_l2_macro_f1"]
     if not by:
         return None

@@ -35,3 +35,6 @@ def test_select_lambda_uses_mean_over_seeds_and_prefers_smaller_on_ties():
                          "lam": lam, "seed": seed, "val_l2_macro_f1": v})
     assert select_lambda(rows, "TCN", "NS1", 0) == (0.1, 0, 0)               # 0.6 tie -> smaller
     assert select_lambda(rows, "TCN", "NS1", 1) is None
+    rows.append({"backbone": "TCN", "model": "NS1", "fold": 0, "fraction": 1.0, "variant": "",
+                 "lam": (0.3, 10.0, 0.1), "seed": 0, "val_l2_macro_f1": 0.99})
+    assert select_lambda(rows, "TCN", "NS1", 0) == (0.1, 0, 0)               # lam_hard = 10 is excluded
