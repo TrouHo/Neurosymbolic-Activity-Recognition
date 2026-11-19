@@ -29,7 +29,7 @@ from emob.data.dataset import load_npz, targets
 from emob.decode import CONSTRAINTS, decode_logits
 from emob.evaluate import decide, evaluate
 
-B2_RUN = re.compile(r"^TCN-B2_frac[\d.]+_fold\d+_seed\d+$")
+B2_RUN = re.compile(r"^(TCN|LSTM)-B2_frac[\d.]+_fold\d+_seed\d+$")
 
 
 def git_commit() -> str | None:
@@ -53,11 +53,11 @@ def jobs(results: Path, summary: Path | None, ablations: bool) -> list[tuple]:
         sel = json.loads(summary.read_text(encoding="utf-8"))["selected_lambda"]
         for key, lam in sel.items():
             name, frac, fold = key.split("|")
-            if name != "TCN-NS2":
+            if name not in ("TCN-NS2", "LSTM-NS2"):
                 continue
             lam_s = "-".join(f"{x:g}" for x in lam)
             for seed in range(3):
-                d = results / f"TCN-NS2_{frac}_{fold}_seed{seed}_lam{lam_s}"
+                d = results / f"{name}_{frac}_{fold}_seed{seed}_lam{lam_s}"
                 if (d / "test_logits.npz").exists():
                     out.append((d, "NS2V", ()))
     return out
@@ -68,7 +68,8 @@ def run_one(job: tuple, out_root: str) -> str:
     m = json.loads((src / "metrics.json").read_text(encoding="utf-8"))
     a = m["args"]
     use = tuple(c for c in CONSTRAINTS if c not in drop)
-    rid = src.name.replace("TCN-B2_", f"TCN-{model}_").replace("TCN-NS2_", f"TCN-{model}_")
+    bb, rest = src.name.split("-", 1)
+    rid = f"{bb}-{model}_" + rest.split("_", 1)[1]
     if drop:
         rid += "_no" + "".join(drop)
     out = Path(out_root) / rid
