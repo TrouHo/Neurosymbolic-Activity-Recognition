@@ -34,10 +34,15 @@ cd code
 | `04_rules.py` | agreement of A1–A7, facts used to justify them, rejected candidate rules |
 | `05_targets.py` | coverage of the five heads, posture episodes, class-weight ratios |
 | `06_models.py` | parameter counts and receptive field (analytic; checked against the models in `tests/test_inspection.py`) |
+| `07_mocap.py` (+ `mocap.py`) | motion-capture checks: movement in unannotated gaps, trunk angle at bend transitions (raw vs aligned labels), unlabelled bends, residual sensor lag, agreement of the annotation offsets across tracks; one manual result, labelled `manual` |
 
-## Not yet included
+## Relation to the older diagnostics
 
-Analyses that need the motion-capture markers beyond head height (trunk angle, marker speed in
-unannotated gaps, label-offset agreement across tracks, residual sensor lag, missing transitions)
-are still in `code/diagnostics/` and `code/estimate/` with their evidence files in `reports/data/`.
-They are listed as such in the reports until they are moved here.
+`code/diagnostics/` holds the first analyses (history). Their definitions were copied here
+unchanged, with one exception: the trunk angle was smoothed with `min_periods` 6 in
+`check_bent.py` and 3 in `check_label_errors.py`; only the first is kept. With it, the unlabelled
+bends are 23 episodes / 53.8 s instead of 22 / 52.8 s (verified: the old smoothing gives the old
+values). Every other motion-capture number of the diagnostics is reproduced exactly.
+
+The estimation of the offsets themselves (`code/estimate/`) is not rerun here: its outputs are the
+frozen parameters in `code/params/`, which the inspection reads and fingerprints.

@@ -34,6 +34,28 @@ def report(name, ok, detail):
     print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
 
+def residual_lags(D: dict) -> dict:
+    """Lag that remains between each kept device of v2 and its reference marker, with the estimator
+    of the sensor alignment (estimate/sensor_offsets.py): {user: {device: summary or None}}, where the
+    summary has the median over 120-s windows and its 90 % bootstrap interval (lo, hi)."""
+    out = {}
+    for u, d in D.items():
+        f = next(C.RAW_2022.glob(f"{u}-*.csv"))
+        mk = pd.read_csv(f, usecols=lambda c: c.startswith(("x_sq_", "y_sq_", "z_sq_")), low_memory=False).apply(pd.to_numeric, errors="coerce")
+        L = len(d["ts"])
+        out[u] = {}
+        for dev, (blk, m) in C.DEVICES.items():
+            j = C.BLOCK_ORDER.index(blk)
+            if not d["avail50"][:, j].any():
+                continue
+            x_ = rank(marker_signal(mk[[f"{a}_sq_{m}" for a in "xyz"]].to_numpy(float)[:L]))
+            y_ = rank(device_signal(d["x50"][:, 3 * j:3 * j + 3].astype(float)))
+            *_, wins = estimate(x_, y_)
+            s = summarise(wins, L / C.FS)
+            out[u][dev] = None if s["lo"] is None else s
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-rebuild", action="store_true")
@@ -76,20 +98,10 @@ def main(argv=None):
     # 3 residual sensor lag
     print("\nResidual sensor lag after alignment (median over 120-s windows, 90 % interval):")
     bad = []
-    for u, d in D.items():
-        f = next(C.RAW_2022.glob(f"{u}-*.csv"))
-        mk = pd.read_csv(f, usecols=lambda c: c.startswith(("x_sq_", "y_sq_", "z_sq_")), low_memory=False).apply(pd.to_numeric, errors="coerce")
-        L = len(d["ts"])
+    for u, devs in residual_lags(D).items():
         row = []
-        for dev, (blk, m) in C.DEVICES.items():
-            j = C.BLOCK_ORDER.index(blk)
-            if not d["avail50"][:, j].any():
-                continue
-            x_ = rank(marker_signal(mk[[f"{a}_sq_{m}" for a in "xyz"]].to_numpy(float)[:L]))
-            y_ = rank(device_signal(d["x50"][:, 3 * j:3 * j + 3].astype(float)))
-            *_, wins = estimate(x_, y_)
-            s = summarise(wins, L / C.FS)
-            if s["lo"] is None:
+        for dev, s in devs.items():
+            if s is None:
                 row.append(f"{dev} n/a"); continue
             okd = not (s["lo"] > 0.1 or s["hi"] < -0.1)
             if not okd:
