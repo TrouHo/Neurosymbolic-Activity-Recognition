@@ -43,6 +43,9 @@ FIXED = {"NS1": (0.3, 0.0, 0.0), "NS2": (0.3, 0.3, 0.3), "NS3": (0.3, 0.3, 0.3)}
 # (trivial solution of A4-A6, W F1 0.72 -> about 0.12). Excluded from selection, kept in "lambda_grid".
 EXCLUDED_LAM_HARD = {10.0}
 COMPARISONS = [("B2", "B1"), ("NS1", "B2"), ("NS2", "B2"), ("NS3", "NS2"), ("NS2-fixed", "B2"), ("B1", "B0")]
+# NS4 (decoding-time rules, emob.run_ns4): own Holm family, so adding it leaves the Holm-adjusted
+# p-values of the phase 1-3 comparisons unchanged. Main: NS4 - B2.
+COMPARISONS_NS4 = [("NS4", "B2"), ("NS2V", "NS2"), ("NS2V", "NS4")]
 
 
 # ----------------------------------------------------------------------------- collect
@@ -153,7 +156,9 @@ def per_participant(rows: list[dict], metric: str) -> dict:
     return {k: {p: float(np.mean(v)) for p, v in sorted(d.items())} for k, d in acc.items()}
 
 
-def compare(rows: list[dict], metric: str = "l2_macro_f1") -> list[dict]:
+def compare(rows: list[dict], metric: str = "l2_macro_f1", comparisons=None) -> list[dict]:
+    comparisons = COMPARISONS if comparisons is None else comparisons
+    lstm_block = comparisons is COMPARISONS
     pp = per_participant(rows, metric)
     out = []
     groups = sorted({(k[2], k[3]) for k in pp})
@@ -161,12 +166,12 @@ def compare(rows: list[dict], metric: str = "l2_macro_f1") -> list[dict]:
         block = []
         backbones = sorted({k[0] for k in pp if k[0] != "RF"})
         for bb in backbones:
-            for a, b in COMPARISONS:
+            for a, b in comparisons:
                 ka = (bb if a != "B0" else "RF", a, cfg, frac)
                 kb = (bb if b != "B0" else "RF", b, cfg, frac)
                 if ka in pp and kb in pp:
                     block.append((f"{bb}-{a} - {kb[0]}-{b}", pp[ka], pp[kb]))
-        for model in sorted({k[1] for k in pp}):                      # backbone dependence
+        for model in sorted({k[1] for k in pp}) if lstm_block else []:   # backbone dependence
             if ("LSTM", model, cfg, frac) in pp and ("TCN", model, cfg, frac) in pp:
                 block.append((f"LSTM-{model} - TCN-{model}", pp[("LSTM", model, cfg, frac)], pp[("TCN", model, cfg, frac)]))
         res = []
@@ -201,10 +206,10 @@ def table(rows: list[dict]) -> dict:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", required=True)
+    ap.add_argument("--results", required=True, nargs="+", help="one or more result folders")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
-    rows = collect(Path(a.results).expanduser())
+    rows = [r for root in a.results for r in collect(Path(root).expanduser())]
     sel = selected_rows(rows)
     lam = {f"{r['backbone']}-{r['model']}|frac{r['fraction']:g}|fold{r['fold']}": list(r["lam"])
            for r in sel if r["model"].startswith("NS") and not r["model"].endswith("fixed")}
@@ -212,6 +217,8 @@ def main(argv=None):
            "per_participant_l2": {"|".join(map(str, k)): v for k, v in per_participant(sel, "l2_macro_f1").items()},
            "comparisons": compare(sel, MAIN),
            "comparisons_secondary": {m: compare(sel, m) for m in SECONDARY},
+           "comparisons_ns4": compare(sel, MAIN, COMPARISONS_NS4),
+           "comparisons_ns4_secondary": {m: compare(sel, m, COMPARISONS_NS4) for m in SECONDARY},
            "variants": table([dict(r, model=f"{r['model']}[{r['variant']}]") for r in rows if r["variant"]]),
            "lambda_grid": table([dict(r, model=f"{r['model']}{list(r['lam'])}") for r in rows
                                  if r["model"].startswith("NS")])}
@@ -226,8 +233,14 @@ def main(argv=None):
         p = lambda x: "-" if x is None else f"{x:.4f}"
         print(f"{c['config']:5s} frac{c['fraction']:<4g} {c['comparison']:28s} diff {c['mean_diff']:+.3f}±{c['sd_diff']:.3f}  "
               f"improved {c['improved']}/{c['n']}  p {p(c['wilcoxon_p'])}  Holm {p(c['holm_p'])}")
+    if res["comparisons_ns4"]:
+        print("\nNS4 (decoding-time rules; own Holm family):")
+    for c in res["comparisons_ns4"]:
+        p = lambda x: "-" if x is None else f"{x:.4f}"
+        print(f"{c['config']:5s} frac{c['fraction']:<4g} {c['comparison']:28s} diff {c['mean_diff']:+.3f}±{c['sd_diff']:.3f}  "
+              f"improved {c['improved']}/{c['n']}  p {p(c['wilcoxon_p'])}  Holm {p(c['holm_p'])}")
     print("\nSecondary metrics (config ALL; 'improved' = lower for violation rates):")
-    for m, cs in res["comparisons_secondary"].items():
+    for m, cs in list(res["comparisons_secondary"].items()) + list(res["comparisons_ns4_secondary"].items()):
         for c in cs:
             if c["config"] == "ALL" and "B0" not in c["comparison"]:
                 print(f"{m:26s} frac{c['fraction']:<4g} {c['comparison']:28s} diff {c['mean_diff']:+.4f}  "
