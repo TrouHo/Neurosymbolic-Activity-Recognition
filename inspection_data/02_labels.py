@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from emob import config as C
-from inspection_data.common import PNAME, ROW_S, STEP_S, Context, Registry, lengths
+from inspection_data.common import PNAME, ROW_S, STEP_S, Context, Registry, lengths, segments
 
 TRACKS = {"body": C.BODY_COL, "arm": "etiq mvt_bras", "leg": C.LEG_COL}
 ARM_RAISE_LOWER = ["Lever_Bras", "Baisser_Bras", "Lever_2_Bras", "Baisser_2_Bras"]
@@ -53,6 +53,30 @@ def run(ctx: Context, reg: Registry):
         reg.add(f"lab.segments.{tag}.n", len(x), "segments", data, f"activity segments, counted on {unit}s")
         reg.add(f"lab.segments.{tag}.below_1s_pct", 100 * (x < 1.0 - 1e-9).mean(), "%", data, f"share of activity segments shorter than 1 s ({unit}s)")
         reg.add(f"lab.segments.{tag}.median_s", np.median(x), "s", data, f"median activity segment duration ({unit}s)")
+
+    # ---- named transitions: median duration per class in the activity column, raw rows
+    meda = {}
+    for t in C.POSTURE_TRANSITIONS:
+        d = np.concatenate([lengths(ctx.raw[u]["act"], ROW_S, keep=lambda v, t=t: v == t) for u in U])
+        meda[t] = float(np.median(d))
+        reg.add(f"lab.transition_act.{t}.median_s", meda[t], "s", "raw", f"median duration of {t} segments in the activity column")
+    reg.add("lab.transition_act.median_min_s", min(meda.values()), "s", "raw", "smallest per-class median, activity column")
+    reg.add("lab.transition_act.median_max_s", max(meda.values()), "s", "raw", "largest per-class median, activity column")
+    reg.add("lab.transition_act.n_classes_median_le_1_2s", sum(v <= 1.2 for v in meda.values()), "classes", "raw",
+            "named transitions whose median in the activity column is <= 1.2 s")
+
+    # ---- interval between consecutive posture transitions (named or Other) in the body track
+    #      (definition of code/diagnostics/durations_2022.py, 2026-11-05)
+    trans = set(C.POSTURE_TRANSITIONS) | {C.OTHER_TRANSITION}
+    gaps = []
+    for u in U:
+        tr = [(s, e) for v, s, e in segments(ctx.raw[u]["fam"][C.BODY_COL]) if v in trans]
+        gaps += [(s2 - e1) * ROW_S for (s1, e1), (s2, e2) in zip(tr[:-1], tr[1:])]
+    gaps = np.array(gaps)
+    reg.add("lab.between_transitions.raw.n", len(gaps), "intervals", "raw", "intervals between consecutive posture transitions, body track")
+    reg.add("lab.between_transitions.raw.median_s", np.median(gaps), "s", "raw", "their median duration")
+    reg.add("lab.between_transitions.raw.max_s", gaps.max(), "s", "raw", "their longest duration")
+    reg.add("lab.between_transitions.raw.le_25_5s_pct", 100 * (gaps <= 25.5).mean(), "%", "raw", "share no longer than 25.5 s (half the TCN receptive field)")
 
     # ---- named transitions: median duration per class, body track, raw rows
     med = {}
