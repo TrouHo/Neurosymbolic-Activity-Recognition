@@ -64,7 +64,7 @@ def main(argv=None):
     y_am = ys[1]
     for k in changed:                                    # steps changed by the decoder: strip under the arg-max row
         ax.add_patch(plt.Rectangle((k / 10, y_am - 0.46), 0.1, 0.1, color=ACCENT, linewidth=0, zorder=5))
-    ax.text(a.end - a.start, y_am - 0.41, "steps changed by the decoder", ha="right", va="center", fontsize=6, color=ACCENT)
+    # no in-figure note: it overlapped the last arg-max box; the caption explains the orange marks
     ax.set_yticks(ys)
     ax.set_yticklabels([r[0] for r in rows])
     ax.set_ylim(-0.5, ys[0] + 0.9)
