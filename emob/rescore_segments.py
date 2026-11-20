@@ -55,8 +55,8 @@ def predictions(f: Path, m: dict, source: Path) -> dict[str, np.ndarray] | None:
 def rescore(args: tuple) -> str:
     f, source = args
     m = json.loads(f.read_text(encoding="utf-8"))
-    if all("l2_segments_concat" in t for t in m["test"].values()):
-        return f"SKIP {f.parent.name}"
+    if "smoothing" in m or all("l2_segments_concat" in t for t in m["test"].values()):
+        return f"SKIP {f.parent.name}"                       # smoothing controls: new convention already
     gt = targets(load_npz(m["fold"]["test"]), m["args"].get("s_variant", "s"))["l2"].astype(np.int64)
     preds = predictions(f, m, source)
     diff = 0.0

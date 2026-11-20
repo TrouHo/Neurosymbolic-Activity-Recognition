@@ -53,6 +53,9 @@ INHERIT_LAMBDA = {"NS3": "NS2"}
 # NS4 (decoding-time rules, emob.run_ns4): own Holm family, so adding it leaves the Holm-adjusted
 # p-values of the phase 1-3 comparisons unchanged. Main: NS4 - B2.
 COMPARISONS_NS4 = [("NS4", "B2"), ("NS2V", "NS2"), ("NS2V", "NS4")]
+# Knowledge-free smoothing controls (emob.run_smooth, declared 2026-11-21 before running them): own
+# Holm family. Main: NS4 - SMV (same share of edited L2 steps, no rule). Mode filters: fixed widths.
+COMPARISONS_SMOOTH = [("NS4", "SMV"), ("SMV", "B2"), ("NS4", "SMM05"), ("NS4", "SMM10"), ("NS4", "SMM20")]
 
 
 # ----------------------------------------------------------------------------- collect
@@ -226,6 +229,8 @@ def main(argv=None):
            "comparisons_secondary": {m: compare(sel, m) for m in SECONDARY},
            "comparisons_ns4": compare(sel, MAIN, COMPARISONS_NS4),
            "comparisons_ns4_secondary": {m: compare(sel, m, COMPARISONS_NS4) for m in SECONDARY},
+           "comparisons_smooth": compare(sel, MAIN, COMPARISONS_SMOOTH),
+           "comparisons_smooth_secondary": {m: compare(sel, m, COMPARISONS_SMOOTH) for m in SECONDARY},
            "variants": table([dict(r, model=f"{r['model']}[{r['variant']}]") for r in rows if r["variant"]]),
            "lambda_grid": table([dict(r, model=f"{r['model']}{list(r['lam'])}") for r in rows
                                  if r["model"].startswith("NS")])}
