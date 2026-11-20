@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from emob.summarize import holm, select_lambda, wilcoxon_exact
+from emob.summarize import holm, select_lambda, selected_rows, wilcoxon_exact
 
 
 def test_wilcoxon_exact_small_samples():
@@ -38,3 +38,16 @@ def test_select_lambda_uses_mean_over_seeds_and_prefers_smaller_on_ties():
     rows.append({"backbone": "TCN", "model": "NS1", "fold": 0, "fraction": 1.0, "variant": "",
                  "lam": (0.3, 10.0, 0.1), "seed": 0, "val_l2_macro_f1": 0.99})
     assert select_lambda(rows, "TCN", "NS1", 0) == (0.1, 0, 0)               # lam_hard = 10 is excluded
+
+
+def test_ns3_inherits_the_lambdas_selected_for_ns2():
+    def row(model, lam, val):
+        return {"backbone": "TCN", "model": model, "fold": 0, "fraction": 1.0, "variant": "",
+                "lam": lam, "seed": 0, "val_l2_macro_f1": val, "run_id": f"{model}{lam}"}
+    ns2_sel, fixed = (0.1, 1.0, 0.3), (0.3, 0.3, 0.3)
+    rows = [row("NS2", ns2_sel, 0.50), row("NS2", fixed, 0.40),
+            row("NS3", ns2_sel, 0.30), row("NS3", fixed, 0.90)]        # NS3's fixed set is better on val
+    sel = selected_rows(rows)
+    ns3 = [r for r in sel if r["model"] == "NS3"]
+    assert [r["lam"] for r in ns3] == [ns2_sel]                        # not re-selected
+    assert {r["model"] for r in sel} == {"NS2", "NS3", "NS2-fixed", "NS3-fixed"}

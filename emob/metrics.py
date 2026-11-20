@@ -3,7 +3,12 @@
 Conventions (documented in knowledge_base/02_design_rationale.md):
 - Frame macro-F1 is averaged over the classes present in the ground truth of the
   evaluated participant (absent classes have no defined recall).
-- Segment metrics are computed on the sequence restricted to supervised steps.
+- Segment metrics (decision 2026-11-21) are computed separately inside each maximal interval of
+  consecutive supervised steps and pooled over the intervals of the participant: F1@k from the summed
+  TP / FP / FN, edit from the summed edit distances over the summed normalisers. No segment and no
+  match crosses an unknown step, because nothing is known about the activity there. The earlier
+  convention (drop the unknown steps, then concatenate) merged segments across gaps; it is kept as
+  segment_metrics_concat() for reference only.
 """
 from __future__ import annotations
 
@@ -68,18 +73,21 @@ def _levenshtein(a: list[int], b: list[int]) -> int:
     return prev[-1]
 
 
-def edit_score(gt: np.ndarray, pred: np.ndarray) -> float:
-    """Segmental edit score in % (Lea et al. 2017): 100 * (1 - Levenshtein / max length)."""
+def _edit_counts(gt: np.ndarray, pred: np.ndarray) -> tuple[int, int]:
+    """(Levenshtein distance between the segment label sequences, max of their lengths)."""
     g = [s[0] for s in segments(gt)]
     p = [s[0] for s in segments(pred)]
-    if max(len(g), len(p)) == 0:
-        return 100.0
-    return 100.0 * (1 - _levenshtein(g, p) / max(len(g), len(p)))
+    return _levenshtein(g, p), max(len(g), len(p))
 
 
-def f1_at_k(gt: np.ndarray, pred: np.ndarray, k: float) -> float:
-    """Segmental F1@k in % (Farha & Gall 2019): a predicted segment is a true positive if its IoU
-    with a not-yet-matched ground-truth segment of the same class is >= k."""
+def edit_score(gt: np.ndarray, pred: np.ndarray) -> float:
+    """Segmental edit score in % (Lea et al. 2017): 100 * (1 - Levenshtein / max length)."""
+    d, n = _edit_counts(gt, pred)
+    return 100.0 if n == 0 else 100.0 * (1 - d / n)
+
+
+def _f1_counts(gt: np.ndarray, pred: np.ndarray, k: float) -> tuple[int, int, int]:
+    """(TP, FP, FN) of segmental F1@k; matching as in f1_at_k."""
     gs, ps = segments(gt), segments(pred)
     used = np.zeros(len(gs), dtype=bool)
     tp = 0
@@ -96,12 +104,50 @@ def f1_at_k(gt: np.ndarray, pred: np.ndarray, k: float) -> float:
         if best >= k and not used[best_j]:
             tp += 1
             used[best_j] = True
-    fp, fn = len(ps) - tp, len(gs) - tp
+    return tp, len(ps) - tp, len(gs) - tp
+
+
+def f1_at_k(gt: np.ndarray, pred: np.ndarray, k: float) -> float:
+    """Segmental F1@k in % (Farha & Gall 2019): a predicted segment is a true positive if its IoU
+    with a not-yet-matched ground-truth segment of the same class is >= k. As in the MS-TCN code,
+    each predicted segment is compared with its best-IoU ground-truth segment of the same class."""
+    tp, fp, fn = _f1_counts(gt, pred, k)
     denom = 2 * tp + fp + fn
     return 100.0 * 2 * tp / denom if denom else 100.0
 
 
+def supervised_intervals(gt: np.ndarray) -> list[tuple[int, int]]:
+    """Maximal [start, end) intervals of consecutive steps with gt != IGNORE."""
+    ok = np.concatenate([[False], gt != C.IGNORE, [False]]).astype(np.int8)
+    d = np.diff(ok)
+    return list(zip(np.flatnonzero(d == 1).tolist(), np.flatnonzero(d == -1).tolist()))
+
+
+KS = {"f1@10": 0.10, "f1@25": 0.25, "f1@50": 0.50}
+
+
 def segment_metrics(gt: np.ndarray, pred: np.ndarray) -> dict:
+    """Edit and F1@k scored inside each supervised interval, pooled over the intervals (micro)."""
+    dist = norm = n_g = n_p = 0
+    counts = {name: np.zeros(3, np.int64) for name in KS}
+    ivs = supervised_intervals(gt)
+    for a, b in ivs:
+        g, p = gt[a:b], pred[a:b]
+        d, n = _edit_counts(g, p)
+        dist, norm = dist + d, norm + n
+        n_g, n_p = n_g + len(segments(g)), n_p + len(segments(p))
+        for name, k in KS.items():
+            counts[name] += _f1_counts(g, p, k)
+    out = {"edit": 100.0 if norm == 0 else 100.0 * (1 - dist / norm)}
+    for name, (tp, fp, fn) in counts.items():
+        den = 2 * tp + fp + fn
+        out[name] = 100.0 * 2 * tp / den if den else 100.0
+    out.update(n_seg_gt=n_g, n_seg_pred=n_p, n_intervals=len(ivs))
+    return out
+
+
+def segment_metrics_concat(gt: np.ndarray, pred: np.ndarray) -> dict:
+    """Superseded convention (until 2026-11-21): drop unknown steps, concatenate, score once."""
     ok = gt != C.IGNORE
     g, p = gt[ok], pred[ok]
     return {"edit": edit_score(g, p), "f1@10": f1_at_k(g, p, 0.10), "f1@25": f1_at_k(g, p, 0.25),

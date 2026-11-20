@@ -6,6 +6,7 @@ Reference: Explanation.md §1 (lambda selection) and §7 (paired comparison); De
 2. select_lambda(): for each (backbone, NS model, fraction, fold), the lambda set with the highest
    validation macro-F1 of L2, averaged over seeds; ties -> the smaller lambdas. Uses validation only.
    Selection is a separate step on saved files: changing the rule needs no retraining.
+   NS3 is not selected: it inherits NS2's selected lambdas (INHERIT_LAMBDA).
 3. compare(): paired comparison on the test participants. Unit = test participant, score = mean
    over seeds (seeds of one participant are not independent). Reported: mean and SD of the
    difference, number of participants improved, exact two-sided Wilcoxon signed-rank p, and
@@ -42,7 +43,13 @@ FIXED = {"NS1": (0.3, 0.0, 0.0), "NS2": (0.3, 0.3, 0.3), "NS3": (0.3, 0.3, 0.3)}
 # lam_hard values outside the valid range (2026-11-18): at lam_hard = 10 the walking head collapses
 # (trivial solution of A4-A6, W F1 0.72 -> about 0.12). Excluded from selection, kept in "lambda_grid".
 EXCLUDED_LAM_HARD = {10.0}
-COMPARISONS = [("B2", "B1"), ("NS1", "B2"), ("NS2", "B2"), ("NS3", "NS2"), ("NS2-fixed", "B2"), ("B1", "B0")]
+COMPARISONS = [("B2", "B1"), ("NS1", "B2"), ("NS2", "B2"), ("NS3", "NS2"), ("NS2-fixed", "B2"),
+               ("NS3-fixed", "NS2-fixed"), ("B1", "B0")]
+# NS3 is not selected on its own (decision 2026-11-21, restoring the declared design): it uses the
+# lambdas selected for NS2 in the same backbone, fold and fraction, so NS3 - NS2 differs only by the
+# steps on which the rule losses are computed. Until 2026-11-21 NS3 was re-selected between NS2's
+# lambdas and the fixed set (8/32 TCN configurations then used the fixed set).
+INHERIT_LAMBDA = {"NS3": "NS2"}
 # NS4 (decoding-time rules, emob.run_ns4): own Holm family, so adding it leaves the Holm-adjusted
 # p-values of the phase 1-3 comparisons unchanged. Main: NS4 - B2.
 COMPARISONS_NS4 = [("NS4", "B2"), ("NS2V", "NS2"), ("NS2V", "NS4")]
@@ -105,7 +112,7 @@ def selected_rows(rows: list[dict]) -> list[dict]:
             continue
         if tuple(r["lam"]) == FIXED.get(r["model"]):
             out.append(dict(r, model=r["model"] + "-fixed"))
-        key = (r["backbone"], r["model"], r["fold"], r["fraction"])
+        key = (r["backbone"], INHERIT_LAMBDA.get(r["model"], r["model"]), r["fold"], r["fraction"])
         if key not in cache:
             cache[key] = select_lambda(rows, *key)
         if tuple(r["lam"]) == cache[key]:

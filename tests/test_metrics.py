@@ -2,7 +2,7 @@ import numpy as np
 
 from emob import config as C
 from emob.metrics import (binary_f1, confusion, edit_score, f1_at_k, macro_f1, rule_violations,
-                          segment_metrics, segments)
+                          segment_metrics, segment_metrics_concat, segments)
 
 I = C.IGNORE
 
@@ -33,11 +33,33 @@ def test_f1_at_k():
     assert f1_at_k(gt, pred, 0.25) == 100.0
 
 
-def test_segment_metrics_drop_ignored_steps():
+def test_segment_metrics_score_each_supervised_interval():
+    # predictions in the unknown gap are ignored; the two sides are separate segments, not merged
     gt = np.array([0, 0, I, I, 0, 0])
     pred = np.array([0, 0, 1, 1, 0, 0])
     m = segment_metrics(gt, pred)
-    assert m["edit"] == 100.0 and m["n_seg_gt"] == 1
+    assert m["edit"] == 100.0 and m["f1@50"] == 100.0
+    assert (m["n_seg_gt"], m["n_intervals"]) == (2, 2)
+    assert segment_metrics_concat(gt, pred)["n_seg_gt"] == 1          # old convention merged them
+
+
+def test_segment_metrics_pool_counts_over_intervals():
+    # interval 1: gt 0,0 | pred 0,1  -> segments [0] vs [0,1]: edit distance 1 of 2; F1@50: tp 1 fp 1 fn 0
+    # interval 2: gt 1,1,1,1 | pred 1,1,1,1 -> distance 0 of 1; tp 1
+    gt = np.array([0, 0, I, 1, 1, 1, 1])
+    pred = np.array([0, 1, 2, 1, 1, 1, 1])
+    m = segment_metrics(gt, pred)
+    assert abs(m["edit"] - 100 * (1 - 1 / 3)) < 1e-9                  # micro: (1 + 0) / (2 + 1)
+    assert abs(m["f1@50"] - 100 * 4 / 5) < 1e-9                       # 2 tp, 1 fp, 0 fn
+    # a segment cannot match across the gap: one long prediction over both sides
+    gt2 = np.array([0, 0, I, 0, 0])
+    m2 = segment_metrics(gt2, np.zeros(5, int))
+    assert m2["f1@50"] == 100.0 and m2["n_seg_pred"] == 2
+
+
+def test_segment_metrics_all_unknown():
+    m = segment_metrics(np.array([I, I]), np.array([0, 1]))
+    assert m["edit"] == 100.0 and m["n_intervals"] == 0
 
 
 def test_rule_violations_a1_a2_a4_a5():
